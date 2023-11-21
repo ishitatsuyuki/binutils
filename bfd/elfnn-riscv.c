@@ -663,8 +663,12 @@ riscv_elf_copy_indirect_symbol (struct bfd_link_info *info,
 }
 
 static char
-riscv_elf_tls_type_from_hi_reloc (unsigned int r_type)
+riscv_elf_tls_type_from_hi_reloc (struct bfd_link_info *info,
+				  unsigned int r_type,
+				  struct elf_link_hash_entry *h,
+				  bool can_relax)
 {
+  bool local_exec = SYMBOL_REFERENCES_LOCAL (info, h);
   switch (r_type)
     {
       case R_RISCV_TLS_GD_HI20:
@@ -672,7 +676,10 @@ riscv_elf_tls_type_from_hi_reloc (unsigned int r_type)
       case R_RISCV_TLS_GOT_HI20:
 	return GOT_TLS_IE;
       case R_RISCV_TLSDESC_HI20:
-	return GOT_TLSDESC;
+	if (!can_relax || !bfd_link_executable (info))
+	  return GOT_TLSDESC;
+	else
+	  return local_exec ? GOT_TLS_LE : GOT_TLS_IE;
       case R_RISCV_TPREL_HI20:
 	return GOT_TLS_LE;
       default:
@@ -866,7 +873,10 @@ riscv_elf_check_relocs (bfd *abfd, struct bfd_link_info *info,
 	  case R_RISCV_TLSDESC_HI20:
 	  case R_RISCV_TPREL_HI20:
 	    {
-	      char tls_type = riscv_elf_tls_type_from_hi_reloc (r_type);
+	      bool can_relax = rel != relocs + sec->reloc_count - 1
+			       && ELFNN_R_TYPE ((rel + 1)->r_info) == R_RISCV_RELAX
+			       && rel->r_offset == (rel + 1)->r_offset;
+	      char tls_type = riscv_elf_tls_type_from_hi_reloc (info, r_type, h, can_relax);
 
 	      /* Local exec is only allowed for executables.  */
 	      if (tls_type == GOT_TLS_LE && !bfd_link_executable (info))
@@ -1816,6 +1826,8 @@ perform_relocation (const reloc_howto_type *howto,
     case R_RISCV_TLS_GOT_HI20:
     case R_RISCV_TLS_GD_HI20:
     case R_RISCV_TLSDESC_HI20:
+    case R_RISCV_TLSDESC_LE_HI:
+    case R_RISCV_TLSDESC_IE_HI:
       if (ARCH_SIZE > 32 && !VALID_UTYPE_IMM (RISCV_CONST_HIGH_PART (value)))
 	return bfd_reloc_overflow;
       value = ENCODE_UTYPE_IMM (RISCV_CONST_HIGH_PART (value));
@@ -1828,6 +1840,8 @@ perform_relocation (const reloc_howto_type *howto,
     case R_RISCV_PCREL_LO12_I:
     case R_RISCV_TLSDESC_LOAD_LO12:
     case R_RISCV_TLSDESC_ADD_LO12:
+    case R_RISCV_TLSDESC_LE_LO:
+    case R_RISCV_TLSDESC_IE_LO:
       value = ENCODE_ITYPE_IMM (value);
       break;
 
@@ -2833,6 +2847,35 @@ riscv_elf_relocate_section (bfd *output_bfd,
 	  else
 	    r = bfd_reloc_overflow;
 	  break;
+
+	case R_RISCV_TLSDESC_IE_HI:
+	  {
+	    bfd_vma insn = MATCH_AUIPC | (X_A0 << OP_SH_RD);
+	    relocation = dtpoff (info, relocation);
+	    bfd_putl32 (insn, contents + rel->r_offset);
+	    break;
+	  }
+	case R_RISCV_TLSDESC_IE_LO:
+	  {
+	    bfd_vma insn = MATCH_LREG | (X_A0 << OP_SH_RD) | (X_A0 << OP_SH_RS1);
+	    relocation = dtpoff (info, relocation);
+	    bfd_putl32 (insn, contents + rel->r_offset);
+	    break;
+	  }
+	case R_RISCV_TLSDESC_LE_HI:
+	  {
+	    bfd_vma insn = MATCH_LUI | (X_A0 << OP_SH_RD);
+	    relocation = tpoff (info, relocation);
+	    bfd_putl32 (insn, contents + rel->r_offset);
+	    break;
+	  }
+	case R_RISCV_TLSDESC_LE_LO:
+	  {
+	    bfd_vma insn = MATCH_ADDI | (X_A0 << OP_SH_RD) | (X_A0 << OP_SH_RS1);
+	    relocation = tpoff (info, relocation);
+	    bfd_putl32 (insn, contents + rel->r_offset);
+	    break;
+	  }
 
 	case R_RISCV_GPREL_I:
 	case R_RISCV_GPREL_S:
@@ -4878,6 +4921,95 @@ _bfd_riscv_relax_tls_le (bfd *abfd,
     }
 }
 
+/* Relax TLSDESC (global-dynamic) references to TLS IE or LE references. */
+
+static bool
+_bfd_riscv_relax_tlsdesc (bfd *abfd,
+			  asection *sec,
+			  asection *sym_sec,
+			  struct bfd_link_info *link_info,
+			  struct elf_link_hash_entry *h,
+			  Elf_Internal_Rela *rel,
+			  bfd_vma symval,
+			  bfd_vma max_alignment ATTRIBUTE_UNUSED,
+			  bfd_vma reserve_size ATTRIBUTE_UNUSED,
+			  bool *again,
+			  riscv_pcgp_relocs *pcgp_relocs,
+			  bool undefined_weak)
+{
+  BFD_ASSERT (rel->r_offset + 4 <= sec->size);
+  BFD_ASSERT (bfd_link_executable (link_info));
+  riscv_pcgp_hi_reloc *hi = NULL;
+  bool local_exec;
+  unsigned sym;
+
+  /* Chain the _LO relocs to their corresponding _HI reloc to compute the
+     actual target address.  */
+  switch (ELFNN_R_TYPE (rel->r_info)) {
+    case R_RISCV_TLSDESC_HI20: {
+      /* If the corresponding lo relocation has already been seen then it's not
+	 safe to relax this relocation.  */
+      if (riscv_find_pcgp_lo_reloc (pcgp_relocs, rel->r_offset))
+	return true;
+      riscv_record_pcgp_hi_reloc (pcgp_relocs,
+				  rel->r_offset,
+				  rel->r_addend,
+				  symval,
+				  ELFNN_R_SYM (rel->r_info),
+				  sym_sec,
+				  h,
+				  undefined_weak);
+      sym = ELFNN_R_SYM (rel->r_info);
+      break;
+    }
+
+    case R_RISCV_TLSDESC_LOAD_LO12:
+    case R_RISCV_TLSDESC_ADD_LO12:
+    case R_RISCV_TLSDESC_CALL: {
+      bfd_vma hi_sec_off = symval - sec_addr (sym_sec);
+      hi = riscv_find_pcgp_hi_reloc (pcgp_relocs, hi_sec_off);
+      if (hi == NULL) {
+	riscv_record_pcgp_lo_reloc (pcgp_relocs, hi_sec_off);
+	return true;
+      }
+      sym = hi->hi_sym;
+      symval = hi->hi_addr;
+      sym_sec = hi->sym_sec;
+      h = hi->h;
+      break;
+    }
+    default:
+      abort ();
+  }
+
+  local_exec = SYMBOL_REFERENCES_LOCAL (link_info, h);
+
+  switch (ELFNN_R_TYPE (rel->r_info)) {
+    case R_RISCV_TLSDESC_HI20:
+      *again = true;
+      riscv_relax_delete_bytes (abfd, sec, rel->r_offset, 4, link_info,
+				pcgp_relocs, rel);
+      break;
+    case R_RISCV_TLSDESC_LOAD_LO12:
+      riscv_relax_delete_bytes (abfd, sec, rel->r_offset, 4, link_info,
+				pcgp_relocs, rel);
+      break;
+    case R_RISCV_TLSDESC_ADD_LO12:
+      rel->r_info = ELFNN_R_INFO (sym, local_exec ? R_RISCV_TLSDESC_LE_HI : R_RISCV_TLSDESC_IE_HI);
+      rel->r_addend += hi->hi_addend;
+      break;
+    case R_RISCV_TLSDESC_CALL:
+      rel->r_info = ELFNN_R_INFO (sym, local_exec ? R_RISCV_TLSDESC_LE_LO : R_RISCV_TLSDESC_IE_LO);
+      rel->r_addend += hi->hi_addend;
+      break;
+    default:
+      abort ();
+  }
+
+  return true;
+}
+
+
 /* Implement R_RISCV_ALIGN by deleting excess alignment NOPs.
    Once we've handled an R_RISCV_ALIGN, we can't relax anything else.  */
 
@@ -5182,6 +5314,12 @@ _bfd_riscv_relax_section (bfd *abfd, asection *sec,
 		   || type == R_RISCV_TPREL_LO12_I
 		   || type == R_RISCV_TPREL_LO12_S)
 	    relax_func = _bfd_riscv_relax_tls_le;
+	  else if (bfd_link_executable (info)
+		   && (type == R_RISCV_TLSDESC_HI20
+		       || type == R_RISCV_TLSDESC_LOAD_LO12
+		       || type == R_RISCV_TLSDESC_ADD_LO12
+		       || type == R_RISCV_TLSDESC_CALL))
+	    relax_func = _bfd_riscv_relax_tlsdesc;
 	  else if (!bfd_link_pic (info)
 		   && (type == R_RISCV_PCREL_HI20
 		       || type == R_RISCV_PCREL_LO12_I

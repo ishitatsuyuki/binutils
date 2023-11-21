@@ -98,12 +98,16 @@ START_RELOC_NUMBERS (elf_riscv_reloc_type)
 END_RELOC_NUMBERS (R_RISCV_max)
 
 /* Internal relocations used exclusively by the relaxation pass.  */
-#define R_RISCV_DELETE  (R_RISCV_max)
-#define R_RISCV_RVC_LUI (R_RISCV_max + 1)
-#define R_RISCV_GPREL_I (R_RISCV_max + 2)
-#define R_RISCV_GPREL_S (R_RISCV_max + 3)
-#define R_RISCV_TPREL_I (R_RISCV_max + 4)
-#define R_RISCV_TPREL_S (R_RISCV_max + 5)
+#define R_RISCV_DELETE		(R_RISCV_max)
+#define R_RISCV_RVC_LUI		(R_RISCV_max + 1)
+#define R_RISCV_GPREL_I		(R_RISCV_max + 2)
+#define R_RISCV_GPREL_S		(R_RISCV_max + 3)
+#define R_RISCV_TPREL_I		(R_RISCV_max + 4)
+#define R_RISCV_TPREL_S		(R_RISCV_max + 5)
+#define R_RISCV_TLSDESC_IE_HI	(R_RISCV_max + 6)
+#define R_RISCV_TLSDESC_IE_LO	(R_RISCV_max + 7)
+#define R_RISCV_TLSDESC_LE_HI	(R_RISCV_max + 8)
+#define R_RISCV_TLSDESC_LE_LO	(R_RISCV_max + 9)
 
 /* Processor specific flags for the ELF header e_flags field.  */
 
