@@ -4212,6 +4212,7 @@ struct riscv_pcgp_hi_reloc
   bfd_vma hi_addr;
   unsigned hi_sym;
   asection *sym_sec;
+  struct elf_link_hash_entry *h;
   bool undefined_weak;
   riscv_pcgp_hi_reloc *next;
 };
@@ -4272,6 +4273,7 @@ static bool
 riscv_record_pcgp_hi_reloc (riscv_pcgp_relocs *p, bfd_vma hi_sec_off,
 			    bfd_vma hi_addend, bfd_vma hi_addr,
 			    unsigned hi_sym, asection *sym_sec,
+			    struct elf_link_hash_entry *h,
 			    bool undefined_weak)
 {
   riscv_pcgp_hi_reloc *new = bfd_malloc (sizeof (*new));
@@ -4282,6 +4284,7 @@ riscv_record_pcgp_hi_reloc (riscv_pcgp_relocs *p, bfd_vma hi_sec_off,
   new->hi_addr = hi_addr;
   new->hi_sym = hi_sym;
   new->sym_sec = sym_sec;
+  new->h = h;
   new->undefined_weak = undefined_weak;
   new->next = p->hi;
   p->hi = new;
@@ -4584,6 +4587,7 @@ riscv_relax_resolve_delete_relocs (bfd *abfd,
 
 typedef bool (*relax_func_t) (bfd *, asection *, asection *,
 			      struct bfd_link_info *,
+			      struct elf_link_hash_entry *,
 			      Elf_Internal_Rela *,
 			      bfd_vma, bfd_vma, bfd_vma, bool *,
 			      riscv_pcgp_relocs *,
@@ -4594,6 +4598,7 @@ typedef bool (*relax_func_t) (bfd *, asection *, asection *,
 static bool
 _bfd_riscv_relax_call (bfd *abfd, asection *sec, asection *sym_sec,
 		       struct bfd_link_info *link_info,
+		       struct elf_link_hash_entry *_h ATTRIBUTE_UNUSED,
 		       Elf_Internal_Rela *rel,
 		       bfd_vma symval,
 		       bfd_vma max_alignment,
@@ -4700,6 +4705,7 @@ _bfd_riscv_relax_lui (bfd *abfd,
 		      asection *sec,
 		      asection *sym_sec,
 		      struct bfd_link_info *link_info,
+		      struct elf_link_hash_entry *_h ATTRIBUTE_UNUSED,
 		      Elf_Internal_Rela *rel,
 		      bfd_vma symval,
 		      bfd_vma max_alignment,
@@ -4813,6 +4819,7 @@ _bfd_riscv_relax_tls_le (bfd *abfd,
 			 asection *sec,
 			 asection *sym_sec ATTRIBUTE_UNUSED,
 			 struct bfd_link_info *link_info,
+			 struct elf_link_hash_entry *_h ATTRIBUTE_UNUSED,
 			 Elf_Internal_Rela *rel,
 			 bfd_vma symval,
 			 bfd_vma max_alignment ATTRIBUTE_UNUSED,
@@ -4855,6 +4862,7 @@ static bool
 _bfd_riscv_relax_align (bfd *abfd, asection *sec,
 			asection *sym_sec,
 			struct bfd_link_info *link_info,
+			struct elf_link_hash_entry *_h ATTRIBUTE_UNUSED,
 			Elf_Internal_Rela *rel,
 			bfd_vma symval,
 			bfd_vma max_alignment ATTRIBUTE_UNUSED,
@@ -4915,6 +4923,7 @@ _bfd_riscv_relax_pc (bfd *abfd ATTRIBUTE_UNUSED,
 		     asection *sec,
 		     asection *sym_sec,
 		     struct bfd_link_info *link_info,
+		     struct elf_link_hash_entry *_h,
 		     Elf_Internal_Rela *rel,
 		     bfd_vma symval,
 		     bfd_vma max_alignment,
@@ -5035,6 +5044,7 @@ _bfd_riscv_relax_pc (bfd *abfd ATTRIBUTE_UNUSED,
 				      symval,
 				      ELFNN_R_SYM(rel->r_info),
 				      sym_sec,
+				      _h,
 				      undefined_weak);
 	  /* Delete unnecessary AUIPC and reuse the reloc.  */
 	  *again = true;
@@ -5124,6 +5134,7 @@ _bfd_riscv_relax_section (bfd *abfd, asection *sec,
   /* Examine and consider relaxing each reloc.  */
   for (i = 0; i < sec->reloc_count; i++)
     {
+      struct elf_link_hash_entry *h = NULL;
       asection *sym_sec;
       Elf_Internal_Rela *rel = relocs + i;
       relax_func_t relax_func;
@@ -5226,7 +5237,6 @@ _bfd_riscv_relax_section (bfd *abfd, asection *sec,
       else
 	{
 	  unsigned long indx;
-	  struct elf_link_hash_entry *h;
 
 	  indx = ELFNN_R_SYM (rel->r_info) - symtab_hdr->sh_info;
 	  h = elf_sym_hashes (abfd)[indx];
@@ -5328,7 +5338,7 @@ _bfd_riscv_relax_section (bfd *abfd, asection *sec,
 
       symval += sec_addr (sym_sec);
 
-      if (!relax_func (abfd, sec, sym_sec, info, rel, symval,
+      if (!relax_func (abfd, sec, sym_sec, info, h, rel, symval,
 		       max_alignment, reserve_size, again,
 		       &pcgp_relocs, undefined_weak))
 	goto fail;
