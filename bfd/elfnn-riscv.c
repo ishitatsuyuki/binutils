@@ -3022,10 +3022,10 @@ riscv_elf_relocate_section (bfd *output_bfd,
 
 	  tls_type = _bfd_riscv_elf_tls_type (input_bfd, h, r_symndx);
 	  BFD_ASSERT (tls_type & (GOT_TLS_IE | GOT_TLS_GD | GOT_TLSDESC));
-	  /* If this symbol is referenced by both GD and IE TLS, the IE
-	     reference's GOT slot follows the GD reference's slots.  */
+	  /* When more than one TLS type is used, the GD slot comes first,
+	     then IE, then finally TLSDESC.  */
 	  ie_off = 0;
-	  if ((tls_type & GOT_TLS_GD) && (tls_type & GOT_TLS_IE))
+	  if (tls_type & GOT_TLS_GD)
 	    ie_off += TLS_GD_GOT_ENTRY_SIZE;
 
 	  desc_off = ie_off;
